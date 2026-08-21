@@ -13,8 +13,10 @@ from music_assistant_models.media_items import MediaItemTranscriptCue
 _CUE_TIMINGS = re.compile(
     r"^(\d{1,4}:(?:\d{1,2}:)?\d{1,2}[.,]\d{1,3})\s*-->\s*(\d{1,4}:(?:\d{1,2}:)?\d{1,2}[.,]\d{1,3})"
 )
-# a WebVTT voice span names the speaker and may carry classes, as in <v.loud Jane Doe>
-_VOICE_TAG = re.compile(r"<v(?:\.[^\s>]+)*\s+([^>]+)>")
+# a WebVTT voice span names the speaker and may carry classes, as in <v.loud Jane Doe>.
+# The class itself cannot contain a dot, and excluding it keeps the repetition
+# unambiguous so a malformed document cannot send the match exponential.
+_VOICE_TAG = re.compile(r"<v(?:\.[^\s.>]+)*\s+([^>]+)>")
 _MARKUP_TAG = re.compile(r"</?[^>]*>")
 # html block boundaries, which read as a line break where a cue timing is not available
 _HTML_LINE_BREAK = re.compile(r"<br\s*/?>|</(?:p|div|h[1-6]|li|tr)\s*>", re.IGNORECASE)

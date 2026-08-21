@@ -173,3 +173,15 @@ def test_trimming_never_empties_a_cue() -> None:
     """Test that trimming always leaves text behind."""
     for document in (ROLLING_WINDOW, REPEATED_CUE, SHORT_REPEAT, UNSPOKEN_REPEAT):
         assert all(cue.text.strip() for cue in parse_transcript_cues(document))
+
+
+def test_parses_a_voice_tag_carrying_classes() -> None:
+    """Test that a voice span with classes still names the speaker."""
+    document = "WEBVTT\n\n00:00.000 --> 00:02.000\n<v.loud.first Jane Doe>Hello there.\n"
+    assert parse_transcript_cues(document)[0].speaker == "Jane Doe"
+
+
+def test_malformed_voice_tag_does_not_stall() -> None:
+    """Test that an unterminated voice span is rejected quickly rather than backtracking."""
+    document = "WEBVTT\n\n00:00.000 --> 00:02.000\n<v" + ".!" * 40 + "\n"
+    assert parse_transcript_cues(document)[0].speaker is None
