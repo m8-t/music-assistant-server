@@ -1,0 +1,115 @@
+name: Bump Upstream Base Version
+
+on:
+  schedule:
+    - cron: "0 2 * * *"  # Daily at 2 AM UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  check-and-bump:
+    name: Check for upstream updates and bump if newer
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: feat/wiim-remote-transport
+
+      - name: Fetch upstream releases
+        id: upstream
+        run: |
+          # Fetch all releases from upstream and filter to stable versions only
+          # Stable versions match X.Y.Z pattern (no b, rc, or dev suffixes)
+          LATEST_STABLE=$(gh release list \
+            --repo music-assistant/server \
+            --limit 100 \
+            --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease == false) | .tagName' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | sort -V | tail -1)
+
+          if [ -z "$LATEST_STABLE" ]; then
+            echo "ERROR: Could not determine latest stable upstream version"
+            exit 1
+          fi
+
+          echo "Latest stable upstream version: $LATEST_STABLE"
+          echo "latest_version=${LATEST_STABLE}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine current base version
+        id: current
+        run: |
+          CURRENT=$(grep "^ARG BASE_VERSION=" docker/wiim-derived.Dockerfile | sed 's/.*=//; s/"//g')
+          echo "Current base version: $CURRENT"
+          echo "current_version=${CURRENT}" >> $GITHUB_OUTPUT
+
+      - name: Compare versions and update if needed
+        id: compare
+        env:
+          CURRENT: ${{ steps.current.outputs.current_version }}
+          LATEST: ${{ steps.upstream.outputs.latest_version }}
+        run: |
+          # Compare versions: newer iff LATEST is sorted last and differs from CURRENT
+          newest=$(printf '%s\n' "$CURRENT" "$LATEST" | sort -V | tail -1)
+
+          if [ "$newest" = "$LATEST" ] && [ "$CURRENT" != "$LATEST" ]; then
+            echo "Newer version available: $CURRENT → $LATEST"
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "new_version=${LATEST}" >> $GITHUB_OUTPUT
+          else
+            echo "Already on latest stable version ($CURRENT)"
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update version references
+        if: steps.compare.outputs.needs_update == 'true'
+        env:
+          NEW_VERSION: ${{ steps.compare.outputs.new_version }}
+        run: |
+          # Update Dockerfile
+          sed -i "s/^ARG BASE_VERSION=.*/ARG BASE_VERSION=${NEW_VERSION}/" \
+            docker/wiim-derived.Dockerfile
+
+          # Update workflow defaults
+          sed -i "s/default: \"[0-9]*\.[0-9]*\.[0-9]*\"/default: \"${NEW_VERSION}\"/" \
+            .github/workflows/wiim-derived-image.yml
+          sed -i "s/BASE_VERSION=\"[0-9]*\.[0-9]*\.[0-9]*\"/BASE_VERSION=\"${NEW_VERSION}\"/" \
+            .github/workflows/wiim-derived-image.yml
+
+          echo "Updated both files to base version ${NEW_VERSION}"
+
+      - name: Commit and push bump
+        if: steps.compare.outputs.needs_update == 'true'
+        env:
+          NEW_VERSION: ${{ steps.compare.outputs.new_version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add docker/wiim-derived.Dockerfile .github/workflows/wiim-derived-image.yml
+
+          git commit -m "chore: bump upstream base to ${NEW_VERSION}"
+
+          git push origin HEAD:feat/wiim-remote-transport
+
+          echo "Pushed version bump commit"
+
+      - name: Trigger derived image build
+        if: steps.compare.outputs.needs_update == 'true'
+        env:
+          NEW_VERSION: ${{ steps.compare.outputs.new_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run wiim-derived-image.yml \
+            --repo ${{ github.repository }} \
+            --ref feat/wiim-remote-transport \
+            -f base_version="${NEW_VERSION}"
+
+          echo "Triggered build workflow for version ${NEW_VERSION}"
