@@ -559,6 +559,11 @@ class StreamsController(CoreController):
             await resp.prepare(request)
             return resp
 
+        # Fire on_stream_requested hook for every GET request — players can observe
+        # stream requests for device control purposes (e.g., detecting remote button presses).
+        if request.method == "GET":
+            player.on_stream_requested(queue_item.queue_item_id)
+
         # Fire on_source_selected hook for every AudioSource GET — this is the
         # single point where exclusive plugin sources claim ownership. Firing
         # unconditionally (regardless of whether streamdetails are cached from
