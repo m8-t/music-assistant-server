@@ -1217,7 +1217,13 @@ class PlayerQueuesController(CoreController):
                 expected_item_id, deadline = expected
                 # check if player has switched to expected item or deadline passed
                 player_item_id = self._parse_player_current_item_id(queue_id, player)
-                if player_item_id == expected_item_id or time.monotonic() >= deadline:
+                player_elapsed = player.state.corrected_elapsed_time or 0
+                # the device reports PLAYING on the new URI before actually fetching the stream,
+                # so we also require elapsed time < 5s to confirm the track actually started
+                if (
+                    (player_item_id == expected_item_id and player_elapsed < 5)
+                    or time.monotonic() >= deadline
+                ):
                     # player has switched or timeout expired, clear the guard and continue
                     self._transitioning_players.discard(queue_id)
                     self._transitioning_expected.pop(queue_id, None)
