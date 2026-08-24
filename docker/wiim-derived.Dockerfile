@@ -37,10 +37,10 @@ RUN set -eu; \
       exit 1; \
     }; \
     rm -rf "$site_packages/music_assistant/models/__pycache__" \
-           "$site_packages/music_assistant/controllers/streams/__pycache__" \
+           "$site_packages/music_assistant/controllers/__pycache__" \
            "$site_packages/music_assistant/providers/wiim/__pycache__"; \
     /app/venv/bin/python -m compileall -q "$site_packages/music_assistant/models" \
-                                            "$site_packages/music_assistant/controllers/streams" \
+                                            "$site_packages/music_assistant/controllers" \
                                             "$site_packages/music_assistant/providers/wiim"; \
     grep -q 'def on_stream_requested' "$site_packages/music_assistant/models/player.py" || { \
       echo "ERROR: marker 'def on_stream_requested' not found in models/player.py"; \
@@ -52,6 +52,10 @@ RUN set -eu; \
     }; \
     grep -q '_resolve_remote_button_press' "$site_packages/music_assistant/providers/wiim/player.py" || { \
       echo "ERROR: marker '_resolve_remote_button_press' not found in providers/wiim/player.py"; \
+      exit 1; \
+    }; \
+    grep -q '_transitioning_expected' "$site_packages/music_assistant/controllers/player_queues.py" || { \
+      echo "ERROR: marker '_transitioning_expected' not found in controllers/player_queues.py"; \
       exit 1; \
     }; \
     apt-get purge -y patch && \

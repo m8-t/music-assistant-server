@@ -196,6 +196,8 @@ class PlayerQueuesController(CoreController):
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
         self._transitioning_players: set[str] = set()
+        self._last_skip_press: dict[str, float] = {}
+        self._transitioning_expected: dict[str, tuple[str, float]] = {}
         self._play_action_refcount: dict[str, int] = {}
         self._last_counted_play: dict[str, str] = {}
         # queue_id -> session_id whose flow stream was fully generated
@@ -690,6 +692,7 @@ class PlayerQueuesController(CoreController):
         self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
         self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
         self._transitioning_players.discard(queue_id)
+        self._transitioning_expected.pop(queue_id, None)
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
@@ -724,6 +727,7 @@ class PlayerQueuesController(CoreController):
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._transitioning_players.discard(queue_id)
+        self._transitioning_expected.pop(queue_id, None)
         if not (queue := self._queues.get(queue_id)):
             return
         queue_active = queue.active
@@ -785,10 +789,12 @@ class PlayerQueuesController(CoreController):
         if idx is None:
             self.logger.warning("Queue %s has no current index", queue.display_name)
             self._transitioning_players.discard(queue_id)
+            self._transitioning_expected.pop(queue_id, None)
             return
         next_index = self._get_next_index(queue_id, idx, True)
         if next_index is None:
             self._transitioning_players.discard(queue_id)
+            self._transitioning_expected.pop(queue_id, None)
             return
 
         # immediately update current item so UI shows the new track right away
@@ -800,14 +806,21 @@ class PlayerQueuesController(CoreController):
         if queue_player := self.mass.players.get_player(queue_id, True):
             queue_player.update_state()
 
-        # debounce rapid next button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            next_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        # leading-edge + trailing debounce for rapid next button presses
+        now = time.monotonic()
+        if now - self._last_skip_press.get(queue_id, 0) > 1.0:
+            # dispatch immediately on leading edge
+            self.mass.create_task(self.play_index(queue_id, next_index))
+        else:
+            # trailing debounce using call_later
+            self.mass.call_later(
+                1,
+                self.play_index,
+                queue_id,
+                next_index,
+                task_id=f"queue_play_index_{queue_id}",
+            )
+        self._last_skip_press[queue_id] = now
 
     @api_command("player_queues/previous")
     @handle_play_action
@@ -824,6 +837,7 @@ class PlayerQueuesController(CoreController):
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             self._transitioning_players.discard(queue_id)
+            self._transitioning_expected.pop(queue_id, None)
             return
         prev_index = int(current_index)
         # restart current track if elapsed > 5s, otherwise go to previous
@@ -839,14 +853,21 @@ class PlayerQueuesController(CoreController):
         if queue_player := self.mass.players.get_player(queue_id, True):
             queue_player.update_state()
 
-        # debounce rapid previous button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            prev_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        # leading-edge + trailing debounce for rapid previous button presses
+        now = time.monotonic()
+        if now - self._last_skip_press.get(queue_id, 0) > 1.0:
+            # dispatch immediately on leading edge
+            self.mass.create_task(self.play_index(queue_id, prev_index))
+        else:
+            # trailing debounce using call_later
+            self.mass.call_later(
+                1,
+                self.play_index,
+                queue_id,
+                prev_index,
+                task_id=f"queue_play_index_{queue_id}",
+            )
+        self._last_skip_press[queue_id] = now
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
@@ -1028,8 +1049,13 @@ class PlayerQueuesController(CoreController):
             queue.current_index = index
             queue.current_item = queue_item
             self.signal_update(queue_id)
-        finally:
+            # on SUCCESS path, hold the transition guard until player actually switches
+            self._transitioning_expected[queue_id] = (queue_item.queue_item_id, time.monotonic() + 5.0)
+        except BaseException:
+            # on failure, immediately clear the transition guard
             self._transitioning_players.discard(queue_id)
+            self._transitioning_expected.pop(queue_id, None)
+            raise
 
     @api_command("player_queues/transfer")
     async def transfer_queue(
@@ -1185,9 +1211,22 @@ class PlayerQueuesController(CoreController):
             # return early if the queue is not active and we have no previous state
             return
         if queue.queue_id in self._transitioning_players:
-            # we're currently transitioning to a new track,
-            # ignore updates from the player during this time
-            return
+            # we're currently transitioning to a new track
+            expected = self._transitioning_expected.get(queue_id)
+            if expected:
+                expected_item_id, deadline = expected
+                # check if player has switched to expected item or deadline passed
+                player_item_id = self._parse_player_current_item_id(queue_id, player)
+                if player_item_id == expected_item_id or time.monotonic() >= deadline:
+                    # player has switched or timeout expired, clear the guard and continue
+                    self._transitioning_players.discard(queue_id)
+                    self._transitioning_expected.pop(queue_id, None)
+                else:
+                    # still waiting for player to switch, ignore this update
+                    return
+            else:
+                # still waiting for play_index to complete, ignore this update
+                return
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 
@@ -1238,6 +1277,7 @@ class PlayerQueuesController(CoreController):
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{player_id}")
         self._transitioning_players.discard(player_id)
+        self._transitioning_expected.pop(player_id, None)
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
             self.mass.create_task(
@@ -1337,6 +1377,7 @@ class PlayerQueuesController(CoreController):
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
         self._transitioning_players.discard(queue_id)
+        self._transitioning_expected.pop(queue_id, None)
         # ruff: noqa: PLR0915
         # we use a contextvar to bypass the throttler for this asyncio task/context
         # this makes sure that playback has priority over other requests that may be
