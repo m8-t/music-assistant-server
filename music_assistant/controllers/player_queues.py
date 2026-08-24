@@ -1239,6 +1239,10 @@ class PlayerQueuesController(CoreController):
             return
         if not queue.active:
             return
+        if queue_id in self._transitioning_players:
+            # we're currently transitioning to a new track,
+            # ignore elapsed time corrections during this time
+            return
         player_elapsed = player.state.corrected_elapsed_time
         if player_elapsed is None:
             return
