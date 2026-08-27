@@ -301,6 +301,9 @@ class MetaDataController(
         if item.provider != "library":
             # this shouldn't happen but just in case.
             return
+        if not self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
+            # online metadata is disabled: a refresh task would be a no-op, so don't queue it
+            return
         last_refresh = item.metadata.last_refresh or 0
         needs_update = (time() - last_refresh) > REFRESH_INTERVAL
         if not needs_update:
