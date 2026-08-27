@@ -1349,6 +1349,15 @@ class Player(ABC):
         # current media is updated (after applying group/sync membership logic).
         # for instance to update any display information on the physical player.
 
+    def on_stream_requested(self, queue_item_id: str) -> None:
+        """
+        Handle callback when the stream server receives a GET request for a queue item.
+
+        :param queue_item_id: Unique identifier of the queue item being requested.
+        """
+        # optional callback for players that want to observe stream requests
+        # default implementation does nothing
+
     # DO NOT OVERWRITE BELOW !
     # These properties and methods are either managed by core logic or they
     # are used to perform a very specific function. Overwriting these may
