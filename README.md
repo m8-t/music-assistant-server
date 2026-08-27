@@ -1,50 +1,61 @@
-Music Assistant
-==================================
+# Music Assistant Server - WiiM fork
 
-**Music Assistant Server**
+Fork of [music-assistant/server](https://github.com/music-assistant/server) carrying a small
+patch set on top of the upstream release tag (currently **2.10.0**). It exists because the
+WiiM physical remote cannot skip tracks with stock Music Assistant, and because track
+changes in the stock queue controller are slower and flakier than they need to be.
 
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/music-assistant/server?utm_source=badge)
+This branch (`feat/wiim-remote-transport`) is the fork's default branch and the only one
+that matters. Everything else is untouched upstream history.
 
-Music Assistant is a free, opensource Media library manager that connects to your streaming services and a wide range of connected speakers. The server is the beating heart, the core of Music Assistant and must run on an always-on device like a Raspberry Pi, a NAS or an Intel NUC or alike.
+## What the patch set does
 
-**Documentation and support**
+The functional changes live in the first commits on top of the tag, one concern per commit:
 
-Documentation https://music-assistant.io
+1. **`feat: add on_stream_requested hook to Player base class`**
+   (`models/player.py`, `controllers/streams/controller.py`)
+   A ~10 line generic hook: the stream server notifies the player object when a GET
+   request for a queue item arrives. No behavior change for any other player.
 
-Beta Documentation https://beta.music-assistant.io
+2. **`feat: rewrite WiiM remote button detection using stream request signals`**
+   (`providers/wiim/player.py`)
+   Makes Next/Previous on the WiiM remote drive the MA queue. Both buttons produce an
+   identical TRANSITIONING event with unchanged URI, so the button is identified by a
+   deterministic side effect instead of position heuristics: on Previous the device
+   re-requests the current item's stream URL within 0.5s, on Next it requests nothing.
+   Rapid presses are coalesced via burst counters. Previous follows a press-count rule:
+   first press restarts the track (device-native), second press within 10s jumps back.
 
-For issues, please go to [the issue tracker](https://github.com/music-assistant/support/issues).
+3. **`fix: dispatch queue skips immediately on first press`**
+   (`controllers/player_queues/controller.py`)
+   Upstream debounces every next/previous with a flat 1s `call_later`, so every skip
+   pays one second even for a single press; changed to leading-edge dispatch with
+   trailing debounce only for presses inside the 1s window.
 
-For feature requests, please see [feature requests](https://github.com/music-assistant/support/discussions/categories/feature-requests-and-ideas).
+The remaining `ci:` commits contain the build and automation described below.
 
-____________
+## How the image is built
 
+`.github/workflows/wiim-derived-image.yml` builds a derived image on top of the official
+`ghcr.io/music-assistant/server:<base_version>` image instead of rebuilding from source:
 
-## Running the server
+- The patch is derived fresh on every run: `git diff <BRANCH_BASE tag>..HEAD -- music_assistant/`.
+- Guards: the tag must be an ancestor of HEAD, the commit count is capped, and the patch
+  may only touch an explicit file allowlist. Any upstream drift fails the build loudly
+  instead of silently shipping a reverted upstream fix.
+- `docker/wiim-derived.Dockerfile` applies the patch with `patch --fuzz=0`, rejects any
+  `.rej`/`.orig` leftovers, recompiles bytecode, and greps content markers per patched file.
+- Result: `ghcr.io/m8-t/music-assistant-server:<base>-wiim-remote.<run>` plus a moving
+  `<base>-wiim-remote` tag. Deployment pins the moving tag by digest so Renovate surfaces
+  every rebuild as a normal update MR.
 
-Music Assistant can be operated as a complete standalone product but it is actually tailored to use side by side with Home Assistant, it is meant with automation in mind, hence our recommended installation method is to run the server as a Home Assistant app.
+## Staying current with upstream
 
+`.github/workflows/upstream-bump.yml` runs daily: it checks upstream for a newer release
+tag, updates the base version in the Dockerfile and workflow defaults, pushes the bump and
+triggers a rebuild. Patch-level upstream updates therefore flow through automatically; the
+build only goes red when a patch no longer applies cleanly, which is the signal that a
+real rebase is due.
 
-### Supported installation methods
-
-The only officially supported ways to run the Music Assistant server are:
-
-- **Home Assistant app** (recommended) — see https://music-assistant.io/installation/
-- **Docker container** — `ghcr.io/music-assistant/server`
-
-Both bundle every system dependency the server needs. Although Music Assistant's main code is Python, it depends on external/OS components — a recent **ffmpeg (6.1+)** with a specific codec set, native libraries (e.g. jemalloc and CIFS/NFS client libraries) and a few bundled binaries — which a plain PyPI/`pip` install can't provide. The server is therefore **not published to PyPI**; run it via the app or container above.
-
-[repository-badge]: https://img.shields.io/badge/Add%20repository%20to%20my-Home%20Assistant-41BDF5?logo=home-assistant&style=for-the-badge
-[repository-url]: https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon
-
-### Running from source (development)
-
-For local development you provide the system dependencies yourself — **Python 3.14+** and **ffmpeg 6.1+** are required.
-
-- `scripts/setup.sh` — create the virtualenv and install dependencies and pre-commit hooks
-- `python -m music_assistant --log-level debug` — run the server locally (listens on http://localhost:8095)
-- `pytest` runs the tests; `pre-commit run --all-files` runs the linters
-
----
-
-[![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
+Inherited upstream workflows (release automation, tests, dependabot helpers) are disabled
+on this fork; only the two workflows above plus the dependency graph are active.
