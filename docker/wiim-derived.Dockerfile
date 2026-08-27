@@ -39,6 +39,7 @@ RUN set -eu; \
     rm -rf "$site_packages/music_assistant/models/__pycache__" \
            "$site_packages/music_assistant/controllers/streams/__pycache__" \
            "$site_packages/music_assistant/controllers/player_queues/__pycache__" \
+           "$site_packages/music_assistant/controllers/metadata/__pycache__" \
            "$site_packages/music_assistant/providers/wiim/__pycache__"; \
     /app/venv/bin/python -m compileall -q "$site_packages/music_assistant/models" \
                                             "$site_packages/music_assistant/controllers" \
@@ -57,6 +58,10 @@ RUN set -eu; \
     }; \
     grep -q '_last_skip_press' "$site_packages/music_assistant/controllers/player_queues/controller.py" || { \
       echo "ERROR: marker '_last_skip_press' not found in controllers/player_queues/controller.py"; \
+      exit 1; \
+    }; \
+    grep -q 'online metadata is disabled: a refresh task would be a no-op' "$site_packages/music_assistant/controllers/metadata/controller.py" || { \
+      echo "ERROR: marker 'online metadata is disabled: a refresh task would be a no-op' not found in controllers/metadata/controller.py"; \
       exit 1; \
     }; \
     apt-get purge -y patch && \

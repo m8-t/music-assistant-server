@@ -20,6 +20,7 @@ on:
       - "music_assistant/models/player.py"
       - "music_assistant/controllers/streams/controller.py"
       - "music_assistant/controllers/player_queues/**"
+      - "music_assistant/controllers/metadata/controller.py"
       - "music_assistant/providers/wiim/**"
       - "docker/wiim-derived.Dockerfile"
       - ".github/workflows/wiim-derived-image.yml"
@@ -109,7 +110,7 @@ jobs:
           # An unexpected file in the patch is exactly the symptom of upstream changes
           # being included (or reversed) in the patch.
           # This list must be extended if the feature grows to touch additional files.
-          ALLOWED_FILES="music_assistant/models/player.py music_assistant/controllers/streams/controller.py music_assistant/controllers/player_queues/controller.py music_assistant/providers/wiim/player.py"
+          ALLOWED_FILES="music_assistant/models/player.py music_assistant/controllers/streams/controller.py music_assistant/controllers/player_queues/controller.py music_assistant/controllers/metadata/controller.py music_assistant/providers/wiim/player.py"
 
           echo ""
           echo "=== Files touched by patch ==="
