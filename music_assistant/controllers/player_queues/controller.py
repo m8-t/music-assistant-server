@@ -175,6 +175,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self._smart_shuffle = SmartShuffle(self)
         self._managed_pool = ManagedPool(self)
         self._media_resolver = MediaResolver(self)
+        self._last_skip_press: dict[str, float] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -812,14 +813,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_player := self.mass.players.get_player(queue_id, True):
             queue_player.update_state()
 
-        # debounce rapid next button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            next_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        # leading-edge + trailing debounce for rapid next button presses
+        now = time.monotonic()
+        if now - self._last_skip_press.get(queue_id, 0) > 1.0:
+            # dispatch immediately on leading edge
+            self.mass.create_task(self.play_index(queue_id, next_index))
+        else:
+            # trailing debounce using call_later
+            self.mass.call_later(
+                1,
+                self.play_index,
+                queue_id,
+                next_index,
+                task_id=f"queue_play_index_{queue_id}",
+            )
+        self._last_skip_press[queue_id] = now
 
     @api_command("player_queues/previous", required_scope=Scope.QUEUES_CONTROL)
     @handle_play_action
@@ -851,14 +859,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_player := self.mass.players.get_player(queue_id, True):
             queue_player.update_state()
 
-        # debounce rapid previous button presses using call_later
-        self.mass.call_later(
-            1,
-            self.play_index,
-            queue_id,
-            prev_index,
-            task_id=f"queue_play_index_{queue_id}",
-        )
+        # leading-edge + trailing debounce for rapid previous button presses
+        now = time.monotonic()
+        if now - self._last_skip_press.get(queue_id, 0) > 1.0:
+            # dispatch immediately on leading edge
+            self.mass.create_task(self.play_index(queue_id, prev_index))
+        else:
+            # trailing debounce using call_later
+            self.mass.call_later(
+                1,
+                self.play_index,
+                queue_id,
+                prev_index,
+                task_id=f"queue_play_index_{queue_id}",
+            )
+        self._last_skip_press[queue_id] = now
 
     @api_command("player_queues/skip", required_scope=Scope.QUEUES_CONTROL)
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
