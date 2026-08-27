@@ -46,6 +46,11 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
 
+COMMAND_IN_FLIGHT_WINDOW = 0.8  # seconds
+COMMAND_IN_FLIGHT_WINDOW_PLAY_MEDIA = 2.0  # seconds
+PREVIOUS_PRESS_WINDOW = 10.0  # seconds - generous window for natural user pacing
+STREAM_REQUEST_WAIT = 0.5  # seconds - device stream re-request observation window
+
 
 class WiimPlayer(Player):
     """Wiim Player in Music Assistant."""
@@ -105,6 +110,12 @@ class WiimPlayer(Player):
         # a copy of the low-level client's detected capabilities, reused to pre-seed each
         # fresh command client so topology reads do not re-probe the device
         self._command_capabilities: dict[str, Any] | None = None
+        self._last_seen_device_uri: str | None = None
+        self._command_in_flight_deadline: float = 0.0
+        self._previous_press_deadline: float = 0.0
+        self._pending_press_at: float = 0.0
+        self._pending_press_loadings: int = 0
+        self._pending_press_requests: int = 0
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
@@ -242,6 +253,9 @@ class WiimPlayer(Player):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._ma_stream_uri = stream_url
+        self._command_in_flight_deadline = (
+            time.monotonic() + COMMAND_IN_FLIGHT_WINDOW_PLAY_MEDIA
+        )
         try:
             await self.device.async_play(uri=stream_url, metadata=didl_metadata)
         except WiimException as err:
@@ -273,6 +287,7 @@ class WiimPlayer(Player):
 
     async def play(self) -> None:
         """Play command."""
+        self._command_in_flight_deadline = time.monotonic() + COMMAND_IN_FLIGHT_WINDOW
         try:
             await self.device.async_play()
         except WiimException as err:
@@ -282,6 +297,7 @@ class WiimPlayer(Player):
 
     async def pause(self) -> None:
         """Pause command."""
+        self._command_in_flight_deadline = time.monotonic() + COMMAND_IN_FLIGHT_WINDOW
         try:
             await self.device.async_pause()
         except WiimException as err:
@@ -294,6 +310,7 @@ class WiimPlayer(Player):
         self._attr_active_source = None
         self._attr_current_media = None
         self._ma_stream_uri = None
+        self._command_in_flight_deadline = time.monotonic() + COMMAND_IN_FLIGHT_WINDOW
         try:
             await self.device.async_stop()
         except WiimException as err:
@@ -303,6 +320,7 @@ class WiimPlayer(Player):
 
     async def seek(self, position: int) -> None:
         """Seek to position in seconds."""
+        self._command_in_flight_deadline = time.monotonic() + COMMAND_IN_FLIGHT_WINDOW
         try:
             await self.device.async_seek(position)
         except WiimException as err:
@@ -336,6 +354,7 @@ class WiimPlayer(Player):
         if not sdk_mode:
             self.logger.warning("Unknown source '%s' for %s", source, self.display_name)
             return
+        self._command_in_flight_deadline = time.monotonic() + COMMAND_IN_FLIGHT_WINDOW
         try:
             await self.device.async_set_play_mode(sdk_mode)
         except WiimException as err:
@@ -410,6 +429,8 @@ class WiimPlayer(Player):
                     PlayingStatus.LOADING,
                 ):
                     self.mass.create_task(self._sync_position())
+                    if sdk_status == PlayingStatus.LOADING:
+                        self._detect_remote_button_press()
         self._update_ma_state_from_sdk_cache()
 
     def _handle_sdk_rendering_control_event(
@@ -509,6 +530,7 @@ class WiimPlayer(Player):
             )
 
         self._log_sdk_state_change()
+        self._last_seen_device_uri = device_uri
         self.update_state()
 
     def _resolve_playback_state(
@@ -604,6 +626,146 @@ class WiimPlayer(Player):
         """Handle a command error by logging and refreshing state."""
         self.logger.warning("Command '%s' failed on %s: %s", action, self._attr_name, err)
         self._update_ma_state_from_sdk_cache()
+
+    def on_stream_requested(self, queue_item_id: str) -> None:
+        """
+        Handle stream re-request signal for remote button detection.
+
+        When the device sends a GET request for the stream, check if we have
+        an open press window and if the requested item is the current item.
+        A re-request for the current item indicates a PREVIOUS button press.
+
+        :param queue_item_id: Unique identifier of the queue item being requested.
+        """
+        # Check if we have an open press window
+        if time.monotonic() >= self._pending_press_at:
+            return
+
+        # Check if the requested item is the current item (stream re-request)
+        ma_queue = self.mass.player_queues.get(self.player_id)
+        if not ma_queue or not ma_queue.current_item:
+            return
+
+        if ma_queue.current_item.queue_item_id == queue_item_id:
+            # Stream re-request for current item detected — increment counter
+            self._pending_press_requests += 1
+            self.logger.debug(
+                "Stream re-request for current item on %s (request #%d)",
+                self._attr_name,
+                self._pending_press_requests,
+            )
+
+    def _detect_remote_button_press(self) -> None:
+        """
+        Detect remote button press from LOADING state and open press window.
+
+        A LOADING event with unchanged device URI indicates a local remote button
+        press, not a natural queue advance. This opens a press window to observe
+        stream request signals and schedules the resolution handler.
+        """
+        if self._native_groups.role_of(self.player_id) == NativeGroupRole.FOLLOWER:
+            return
+
+        is_ma_source = self._attr_active_source == self.player_id
+        if not is_ma_source:
+            return
+
+        if time.monotonic() < self._command_in_flight_deadline:
+            return
+
+        media = self.device.current_media
+        device_uri = media.uri if media and media.uri else ""
+        if device_uri == self._last_seen_device_uri:
+            now = time.monotonic()
+            # Check if this is a new burst (window expired) or continuation
+            if now >= self._pending_press_at:
+                # New burst — reset counters
+                self._pending_press_loadings = 0
+                self._pending_press_requests = 0
+            # Always: increment loading count, extend window, reschedule resolver
+            self._pending_press_loadings += 1
+            self._pending_press_at = now + STREAM_REQUEST_WAIT
+            self.logger.debug(
+                "Remote transport press on %s, waiting %.1fs for stream request",
+                self._attr_name,
+                STREAM_REQUEST_WAIT,
+            )
+            # Schedule the resolution handler to fire after STREAM_REQUEST_WAIT
+            # task_id dedup re-arms the timer on each press
+            self.mass.call_later(
+                STREAM_REQUEST_WAIT,
+                self._resolve_remote_button_press,
+                task_id=f"wiim_remote_button_check_{self.player_id}",
+            )
+
+    def _resolve_remote_button_press(self) -> None:
+        """
+        Resolve remote button press direction based on stream request signal.
+
+        Called after STREAM_REQUEST_WAIT seconds to determine if the device
+        re-requested the stream (PREVIOUS) or not (NEXT). Counts presses within
+        a burst window and dispatches accordingly.
+        """
+        # Capture burst state and reset it
+        requests = self._pending_press_requests
+        loadings = self._pending_press_loadings
+
+        if requests == 0:
+            # No stream re-requests — classify as NEXT presses
+            # Cap at 3 to bound a runaway burst
+            n = min(loadings, 3)
+            self.logger.debug(
+                "No stream request within %.1fs on %s, pending press is NEXT (x%d)",
+                STREAM_REQUEST_WAIT,
+                self._attr_name,
+                n,
+            )
+            # Dispatch next() n times; each call advances index and debounces playback
+            for _ in range(n):
+                self.mass.create_task(self.mass.players.cmd_next_track(self.player_id))
+        elif requests >= 2:
+            # Multiple stream re-requests — a complete double-press gesture
+            self.logger.debug(
+                "Double PREVIOUS press in burst on %s, jumping back",
+                self._attr_name,
+            )
+            self._dispatch_previous_in_queue()
+            self._previous_press_deadline = time.monotonic() + PREVIOUS_PRESS_WINDOW
+        else:  # requests == 1
+            # Single stream re-request — apply press-count window logic
+            if time.monotonic() < self._previous_press_deadline:
+                self.logger.debug(
+                    "Second PREVIOUS press on %s within window, jumping back",
+                    self._attr_name,
+                )
+                self._dispatch_previous_in_queue()
+            else:
+                self.logger.debug(
+                    "First PREVIOUS press on %s, opening window",
+                    self._attr_name,
+                )
+                # Device already restarted track; nothing to dispatch here
+            self._previous_press_deadline = time.monotonic() + PREVIOUS_PRESS_WINDOW
+
+    def _dispatch_previous_in_queue(self) -> None:
+        """
+        Dispatch a jump to the previous queue item.
+
+        Called when the second PREVIOUS press is detected within the press window.
+        Uses play_index to bypass the elapsed_time rule and get exact semantics.
+        """
+        ma_queue = self.mass.player_queues.get(self.player_id)
+        if ma_queue is None or ma_queue.current_index is None:
+            self.logger.debug("No queue or current index for PREVIOUS on %s", self._attr_name)
+            return
+
+        prev_index = max(ma_queue.current_index - 1, 0)
+        self.logger.debug(
+            "play_index to previous item: index %d on %s",
+            prev_index,
+            self._attr_name,
+        )
+        self.mass.create_task(self.mass.player_queues.play_index(ma_queue.queue_id, prev_index))
 
     def _republish_peers_if_availability_changed(self, was_available: bool) -> None:
         """Re-publish every native peer when this device's availability just flipped."""
