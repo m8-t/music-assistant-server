@@ -32,6 +32,12 @@ The functional changes live in the first commits on top of the tag, one concern 
    pays one second even for a single press; changed to leading-edge dispatch with
    trailing debounce only for presses inside the 1s window.
 
+4. **`fix: skip scheduling metadata refresh tasks when online metadata is disabled`**
+   (`controllers/metadata/controller.py`)
+   When "Enable online metadata" is off, `schedule_update_metadata` still queued
+   no-op refresh tasks, wasting the 2-slot background task queue. Prevents queue
+   starvation during post-migration metadata floods (e.g. MusicBrainz lookup spikes).
+
 The remaining `ci:` commits contain the build and automation described below.
 
 ## How the image is built
