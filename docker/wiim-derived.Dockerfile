@@ -27,7 +27,8 @@ RUN set -eu; \
     fi; \
     site_packages="$matches"; \
     echo "Using site-packages directory: $site_packages"; \
-    patch -d "$site_packages" --batch --forward --fuzz=0 --strip=1 < /tmp/overlay.patch || { \
+    # Prevent .orig backups when hunks apply at an offset; .rej still indicates genuine failures.
+    patch -d "$site_packages" --batch --forward --fuzz=0 --strip=1 --no-backup-if-mismatch < /tmp/overlay.patch || { \
       echo "ERROR: patch application failed"; \
       exit 1; \
     }; \
