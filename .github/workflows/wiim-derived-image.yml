@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       base_version:
-        description: "Base Music Assistant Server version (e.g., 2.10.0)"
+        description: "Base Music Assistant Server version (leave empty to use the version pinned in the Dockerfile)"
         required: false
-        default: "2.10.0"
+        default: ""
         type: string
       tag_suffix:
         description: "Tag suffix for the derived image (e.g., wiim-remote)"
@@ -53,11 +53,20 @@ jobs:
           INPUT_BASE_VERSION: ${{ inputs.base_version }}
         run: |
           # Determine BASE_VERSION (same logic as Determine build inputs step)
+          BASE_VERSION=""
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             BASE_VERSION="$INPUT_BASE_VERSION"
-          else
-            BASE_VERSION="2.10.0"
           fi
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION=$(grep "^ARG BASE_VERSION=" docker/wiim-derived.Dockerfile | sed 's/.*=//; s/"//g')
+          fi
+
+          if [ -z "$BASE_VERSION" ]; then
+            echo "ERROR: could not read ARG BASE_VERSION from docker/wiim-derived.Dockerfile"
+            exit 1
+          fi
+
+          echo "Resolved base version: $BASE_VERSION"
 
           # Extract BRANCH_BASE from Dockerfile (the tag our commits are rebased onto)
           BRANCH_BASE=$(grep "^ARG BRANCH_BASE=" docker/wiim-derived.Dockerfile | sed 's/.*=//; s/"//g')
@@ -165,15 +174,26 @@ jobs:
           INPUT_TAG_SUFFIX: ${{ inputs.tag_suffix }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          # Use workflow_dispatch inputs if provided, otherwise use defaults from push
+          # Use workflow_dispatch inputs if provided, otherwise read from Dockerfile
+          BASE_VERSION=""
+          TAG_SUFFIX=""
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             BASE_VERSION="$INPUT_BASE_VERSION"
             TAG_SUFFIX="$INPUT_TAG_SUFFIX"
-          else
-            BASE_VERSION="2.10.0"
+          fi
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION=$(grep "^ARG BASE_VERSION=" docker/wiim-derived.Dockerfile | sed 's/.*=//; s/"//g')
+          fi
+          if [ -z "$TAG_SUFFIX" ]; then
             TAG_SUFFIX="wiim-remote"
           fi
 
+          if [ -z "$BASE_VERSION" ]; then
+            echo "ERROR: could not read ARG BASE_VERSION from docker/wiim-derived.Dockerfile"
+            exit 1
+          fi
+
+          echo "Resolved base version: $BASE_VERSION"
           echo "base_version=${BASE_VERSION}" >> $GITHUB_OUTPUT
           echo "tag_suffix=${TAG_SUFFIX}" >> $GITHUB_OUTPUT
           echo "run_number=${RUN_NUMBER}" >> $GITHUB_OUTPUT
