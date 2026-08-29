@@ -106,14 +106,14 @@ jobs:
             exit 1
           fi
 
-          # Sanity guard: fail if patch includes too many commits (would indicate wrong BRANCH_BASE)
-          commit_count=$(git rev-list --count "refs/tags/${BRANCH_BASE}..HEAD")
+          # Sanity guard: fail if patch includes too many commits touching music_assistant/ (would indicate wrong BRANCH_BASE)
+          commit_count=$(git rev-list --count "refs/tags/${BRANCH_BASE}..HEAD" -- music_assistant/)
           if [ "$commit_count" -gt 10 ]; then
-            echo "ERROR: Too many commits ($commit_count > 10) between BRANCH_BASE and HEAD"
-            echo "This suggests BRANCH_BASE is misconfigured. Expected 2-3 feature commits."
+            echo "ERROR: Too many patch-affecting commits ($commit_count > 10) between BRANCH_BASE and HEAD"
+            echo "This suggests BRANCH_BASE is misconfigured."
             exit 1
           fi
-          echo "Patch spans $commit_count commit(s)"
+          echo "Patch spans $commit_count commit(s) touching music_assistant/"
 
           # CRITICAL GUARD: Verify that patch only touches the expected files
           # An unexpected file in the patch is exactly the symptom of upstream changes
