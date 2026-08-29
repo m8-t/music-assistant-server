@@ -123,7 +123,7 @@ jobs:
 
           echo ""
           echo "=== Files touched by patch ==="
-          PATCHED_FILES=$(grep '^+++ b/' overlay.patch | sed 's#^+++ b/##')
+          PATCHED_FILES=$(git diff --name-only "refs/tags/${BRANCH_BASE}" HEAD -- music_assistant/)
           if [ -z "$PATCHED_FILES" ]; then
             echo "(none)"
           else
