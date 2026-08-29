@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   actions: write
+  packages: read
 
 jobs:
   check-and-bump:
@@ -50,6 +51,12 @@ jobs:
           echo "Current base version: $CURRENT"
           echo "current_version=${CURRENT}" >> $GITHUB_OUTPUT
 
+      - name: Authenticate to container registry
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
       - name: Compare versions and update if needed
         id: compare
         env:
@@ -59,13 +66,33 @@ jobs:
           # Compare versions: newer iff LATEST is sorted last and differs from CURRENT
           newest=$(printf '%s\n' "$CURRENT" "$LATEST" | sort -V | tail -1)
 
+          needs_update=false
           if [ "$newest" = "$LATEST" ] && [ "$CURRENT" != "$LATEST" ]; then
             echo "Newer version available: $CURRENT → $LATEST"
-            echo "needs_update=true" >> $GITHUB_OUTPUT
+            needs_update=true
             echo "new_version=${LATEST}" >> $GITHUB_OUTPUT
           else
             echo "Already on latest stable version ($CURRENT)"
-            echo "needs_update=false" >> $GITHUB_OUTPUT
+          fi
+          echo "needs_update=${needs_update}" >> $GITHUB_OUTPUT
+
+          # Check if derived image exists for the latest version
+          image_exists=true
+          if ! docker manifest inspect "ghcr.io/${{ github.repository_owner }}/music-assistant-server:${LATEST}-wiim-remote" >/dev/null 2>&1; then
+            image_exists=false
+          fi
+
+          # Determine if a build is needed: either a version bump OR missing image
+          if [ "$needs_update" = "true" ] || [ "$image_exists" = "false" ]; then
+            echo "needs_build=true" >> $GITHUB_OUTPUT
+            if [ "$needs_update" = "true" ]; then
+              echo "Decision: bumping to ${LATEST}"
+            else
+              echo "Decision: self-healing missing derived image for ${LATEST}"
+            fi
+          else
+            echo "needs_build=false" >> $GITHUB_OUTPUT
+            echo "Decision: idle (already on latest, image exists)"
           fi
 
       - name: Update version references
@@ -107,3 +134,14 @@ jobs:
             -f base_version="${NEW_VERSION}"
 
           echo "Triggered build workflow for version ${NEW_VERSION}"
+
+      - name: Retry derived image build for missing image
+        if: steps.compare.outputs.needs_update == 'false' && steps.compare.outputs.needs_build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run wiim-derived-image.yml \
+            --repo ${{ github.repository }} \
+            --ref feat/wiim-remote-transport
+
+          echo "Retriggered build workflow: Dockerfile already pins the version but derived image is missing"
