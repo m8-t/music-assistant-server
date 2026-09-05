@@ -4,7 +4,7 @@
 # ARG BASE_VERSION: upstream image version to build on (automatically bumped by upstream-bump workflow)
 # ARG BRANCH_BASE: git tag that this branch's commits are rebased onto (only changes on manual rebase)
 
-ARG BASE_VERSION=2.10.1
+ARG BASE_VERSION=2.10.2
 ARG BRANCH_BASE=2.10.0
 FROM ghcr.io/music-assistant/server:${BASE_VERSION}
 
