@@ -1,5 +1,17 @@
 # Music Assistant Server - WiiM fork
 
+> **Archived on 2026-10-11. This fork is no longer maintained.**
+>
+> I stopped using Music Assistant. The nightly upstream bump and the image build are
+> switched off, so the images on `ghcr.io/m8-t/music-assistant-server` stay at the last
+> build (base 2.10.6) and get no further upstream fixes.
+>
+> What replaced it: Navidrome with a small bridge that keeps the play queue on the WiiM
+> itself, where the physical remote works without any detection logic:
+> [m8-t/navidrome-wiim-bridge](https://github.com/m8-t/navidrome-wiim-bridge).
+>
+> The patch set below still applies to the 2.10 line if you want to carry it yourself.
+
 Fork of [music-assistant/server](https://github.com/music-assistant/server) carrying a small
 patch set on top of the upstream release tag (currently **2.10.0**). It exists because the
 WiiM physical remote cannot skip tracks with stock Music Assistant, and because track
